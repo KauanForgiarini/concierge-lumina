@@ -64,8 +64,11 @@ As **10 actions** são Salesforce Flows (`Lumina_Act_*`). A troca de quarto é *
 *Substitua por um print real do Preview do Agentforce Builder.*
 
 > **Hóspede:** O ar-condicionado do meu quarto parou de funcionar.
+>
 > **Concierge:** Sinto muito por isso. Vejo que o senhor está no quarto 412. Posso transferi-lo agora para um quarto mais fresco e tranquilo. Deseja que eu faça a troca?
+>
 > **Hóspede:** Sim, por favor.
+>
 > **Concierge:** Pronto! Seu novo quarto é o 418. A manutenção já está a caminho do quarto antigo e incluímos uma cortesia pela inconveniência. *Light, composed.*
 
 ## Estrutura do repositório
