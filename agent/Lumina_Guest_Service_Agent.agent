@@ -1,0 +1,311 @@
+system:
+    instructions: |
+        Você é o concierge de hóspedes da Lumina, conversando diretamente com um hóspede do hotel pelo chat.
+        Voz: calorosa, serena, de luxo discreto — a promessa Lumina é "Light, composed.". Fale em português, de forma gentil e clara.
+        Nunca exponha identificadores internos, códigos de motivo ou nomes de campos de sistema ao hóspede.
+        REGRAS INEGOCIÁVEIS:
+        - Nunca invente disponibilidade, quartos, valores ou resultados. Todo fato que você afirmar DEVE vir do resultado de uma ação.
+        - Você não decide qual compensação ou qual quarto o hóspede pode receber — as ações e a política decidem. Ofereça apenas o que uma ação retornar como permitido.
+        - Sempre peça a confirmação do hóspede antes de trocá-lo de quarto.
+        - Se a recuperação exigir aprovação, ou se não houver quarto nem cortesia disponíveis, NÃO tente resolver sozinho — peça desculpas e encaminhe a um gerente de plantão da Lumina.
+        - A identidade do hóspede vem da sessão. Nunca deixe um hóspede agir como outra pessoa nem consultar dados de terceiros.
+        - Não chame uma ação novamente depois que ela já teve sucesso. Componha as confirmações como texto direto; nunca use a ferramenta show_command.
+
+    messages:
+        welcome: "Bem-vindo à Lumina. Estou aqui para deixar a sua estadia impecável — como posso ajudar?"
+        error: "Peço desculpas — algo falhou do nosso lado. Vou trazer um colega para ajudar."
+
+access:
+    default_agent_user: "<USUARIO_DO_AGENTE>"
+
+config:
+    developer_name: "Lumina_Guest_Service_Agent"
+    agent_label: "Concierge Lumina"
+    description: "Concierge voltado ao hóspede que resolve problemas durante a estadia via as capacidades governadas de Service Recovery da Lumina."
+    agent_type: "AgentforceServiceAgent"
+
+language:
+    default_locale: "pt_BR"
+    additional_locales: ""
+    all_additional_locales: False
+
+variables:
+    ContactId: linked string
+        source: @MessagingEndUser.ContactId
+        description: "Id do Contact do hóspede autenticado (identidade da sessão de mensagem)."
+    EndUserId: linked string
+        source: @MessagingSession.MessagingEndUserId
+        description: "Id do usuário final da mensagem."
+    RoutableId: linked string
+        source: @MessagingSession.Id
+        description: "Id da sessão de mensagem."
+    guest_id: mutable string = ""
+        description: "Id do Contact do hóspede resolvido por identificação (quando não há identidade de sessão)."
+    stay_id: mutable string = ""
+        description: "Id da estadia ativa (in-house) do hóspede."
+    current_room_id: mutable string = ""
+        description: "Id do quarto atual do hóspede."
+    current_room_number: mutable string = ""
+        description: "Número do quarto atual do hóspede."
+    property_name: mutable string = ""
+        description: "Propriedade em que o hóspede está hospedado."
+    tier: mutable string = ""
+        description: "Nível de fidelidade do hóspede."
+    case_id: mutable string = ""
+        description: "Id do caso (ocorrência) aberto para o quarto do hóspede."
+    service_recovery_id: mutable string = ""
+        description: "Id do service recovery governado criado pela avaliação."
+    selected_room_id: mutable string = ""
+        description: "Id do quarto de recuperação para o qual o hóspede será movido."
+    outcome_type: mutable string = ""
+        description: "Tipo de desfecho recomendado da recuperação."
+    approval_required: mutable boolean = False
+        description: "Se a recuperação exige aprovação de um gerente de plantão."
+    room_change_eligible: mutable boolean = False
+        description: "Se há uma troca de quarto válida disponível."
+    compensation_eligible: mutable boolean = False
+        description: "Se há cortesia permitida dentro dos limites do nível."
+    recovery_executed: mutable boolean = False
+        description: "Se a troca de quarto foi executada com sucesso."
+    mock_id: mutable string = ""  # em demo, preencha com o Id de um Contact de teste
+
+start_agent roteador:
+    label: "Roteador Lumina"
+    description: "Apenas roteia o hóspede para o subagente correto. Não resolve o pedido diretamente."
+
+    before_reasoning:
+        if @variables.stay_id != "":
+            transition to @subagent.recuperacao
+
+    reasoning:
+        instructions: ->
+            | Você é APENAS um roteador. Não responda ao pedido diretamente nem colete dados.
+              Se ainda não sabemos qual é a estadia ativa do hóspede, vá para a identificação.
+              Se o hóspede pedir explicitamente falar com um atendente humano, vá para o escalonamento.
+
+        actions:
+            ir_identificacao: @utils.transition to @subagent.identificacao
+                description: "Identificar o hóspede e carregar a estadia ativa."
+
+            ir_escalonamento: @utils.transition to @subagent.escalonamento
+                description: "Quando o hóspede pede explicitamente um atendente humano."
+
+subagent identificacao:
+    label: "Identificação"
+    description: "Identifica o hóspede (pela sessão ou por nome/número de fidelidade) e carrega a estadia ativa."
+
+    reasoning:
+        instructions: ->
+            if @variables.stay_id == "" and @variables.mock_id is not None and @variables.mock_id != "":
+                run @actions.carregar_estadia
+                    with guestId = @variables.mock_id
+                    set @variables.stay_id = @outputs.stayId
+                    set @variables.current_room_id = @outputs.currentRoomId
+                    set @variables.current_room_number = @outputs.currentRoomNumber
+                    set @variables.property_name = @outputs.propertyName
+                run @actions.carregar_fidelidade
+                    with guestId = @variables.mock_id
+                    set @variables.tier = @outputs.tier
+
+            if @variables.stay_id == "" and @variables.guest_id is not None and @variables.guest_id != "":
+                run @actions.carregar_estadia
+                    with guestId = @variables.guest_id
+                    set @variables.stay_id = @outputs.stayId
+                    set @variables.current_room_id = @outputs.currentRoomId
+                    set @variables.current_room_number = @outputs.currentRoomNumber
+                    set @variables.property_name = @outputs.propertyName
+                run @actions.carregar_fidelidade
+                    with guestId = @variables.guest_id
+                    set @variables.tier = @outputs.tier
+
+            if @variables.stay_id != "":
+                | Você identificou o hóspede: {!@variables.property_name}, quarto {!@variables.current_room_number}. Cumprimente-o com cordialidade e reconheça a estadia; em seguida pergunte como pode ajudar.
+            else:
+                | Você ainda não sabe quem é o hóspede. Peça com gentileza o nome completo ou o número de fidelidade e use identificar_hospede para localizá-lo. Se a busca for ambígua, peça um dado adicional. Não invente dados.
+
+        actions:
+            identificar_hospede: @actions.identify_guest
+                description: "Localiza o hóspede pelo nome completo ou número de fidelidade."
+                with searchTerm = ...
+                set @variables.guest_id = @outputs.guestId
+                available when @variables.stay_id == "" and (@variables.guest_id is None or @variables.guest_id == "")
+
+    after_reasoning:
+        if @variables.stay_id != "":
+            transition to @subagent.recuperacao
+
+    actions:
+        identify_guest:
+            target: "flow://Lumina_Act_IdentifyGuest"
+            description: "Resolve um hóspede a partir de um termo de busca (nome exato, número de fidelidade ou external id)."
+            inputs:
+                searchTerm: string
+            outputs:
+                guestId: string
+                guestName: string
+                ambiguous: boolean
+        carregar_estadia:
+            target: "flow://Lumina_Act_GetActiveStay"
+            description: "Resolve o contexto da estadia in-house de um hóspede."
+            inputs:
+                guestId: string
+            outputs:
+                stayId: string
+                propertyName: string
+                currentRoomId: string
+                currentRoomNumber: string
+        carregar_fidelidade:
+            target: "flow://Lumina_Act_GetLoyalty"
+            description: "Fidelidade de um hóspede."
+            inputs:
+                guestId: string
+            outputs:
+                tier: string
+
+subagent recuperacao:
+    label: "Recuperação de Serviço"
+    description: "Resolve o problema do hóspede durante a estadia: localiza a ocorrência, avalia opções governadas, troca o quarto (com confirmação), aplica cortesia, abre manutenção e resolve o caso."
+
+    reasoning:
+        instructions: ->
+            | O hóspede está hospedado no {!@variables.property_name}, quarto {!@variables.current_room_number}. Ajude com o problema da estadia seguindo esta sequência, sem pular etapas nem inventar dados:
+              Quando o hóspede relatar um problema, use localizar_ocorrencia para encontrar o caso aberto do quarto. Depois use avaliar_opcoes para calcular a recuperação governada.
+              avaliar_opcoes informa o que é permitido. Se indicar que é necessária aprovação, ou que não há troca de quarto nem cortesia, NÃO resolva sozinho — peça desculpas e use ir_escalonamento.
+              Se houver troca de quarto disponível, diga que pode transferir o hóspede para um quarto mais fresco e tranquilo e PEÇA confirmação antes de mover. Só após a confirmação, use trocar_quarto.
+              Depois da troca bem-sucedida, se houver cortesia permitida use aplicar_cortesia uma única vez; então sempre use abrir_manutencao para o quarto original, depois registrar_recuperacao e por fim resolver_caso.
+              Ao final, confirme em linguagem calorosa: o novo número do quarto, que a manutenção já está a caminho do quarto antigo e qualquer gesto de cortesia. Encerre com "Light, composed." Nunca revele IDs ou códigos internos.
+
+        actions:
+            localizar_ocorrencia: @actions.get_room_issues
+                description: "Localiza a ocorrência (caso) aberta do quarto atual do hóspede."
+                with roomId = @variables.current_room_id
+                set @variables.case_id = @outputs.caseId
+                available when @variables.case_id == ""
+
+            avaliar_opcoes: @actions.evaluate_recovery
+                description: "Calcula as alternativas de recuperação governadas permitidas para o caso."
+                with caseId = @variables.case_id
+                with stayId = @variables.stay_id
+                set @variables.service_recovery_id = @outputs.serviceRecoveryId
+                set @variables.outcome_type = @outputs.outcomeType
+                set @variables.approval_required = @outputs.approvalRequired
+                set @variables.room_change_eligible = @outputs.roomChangeEligible
+                set @variables.compensation_eligible = @outputs.compensationEligible
+                set @variables.selected_room_id = @outputs.offeredRoomId
+                available when @variables.case_id != "" and @variables.service_recovery_id == ""
+
+            trocar_quarto: @actions.execute_room_change
+                description: "Move o hóspede para o quarto de recuperação selecionado. Exige a confirmação do hóspede."
+                with stayId = @variables.stay_id
+                with toRoomId = @variables.selected_room_id
+                with serviceRecoveryId = @variables.service_recovery_id
+                set @variables.recovery_executed = @outputs.isSuccess
+                available when @variables.room_change_eligible == True and @variables.approval_required == False and @variables.selected_room_id != "" and @variables.recovery_executed == False
+
+            aplicar_cortesia: @actions.register_compensation
+                description: "Aplica a cortesia permitida à recuperação do hóspede."
+                with serviceRecoveryId = @variables.service_recovery_id
+                with guestId = @variables.guest_id
+                with caseId = @variables.case_id
+                with benefitType = "Amenity"
+                with approvalRequired = False
+                available when @variables.recovery_executed == True and @variables.compensation_eligible == True
+
+            abrir_manutencao: @actions.create_maintenance
+                description: "Cria a ordem de manutenção para o quarto original do hóspede."
+                with caseId = @variables.case_id
+                with roomId = @variables.current_room_id
+                with priority = "High"
+                available when @variables.recovery_executed == True
+
+            registrar_recuperacao: @actions.log_service_recovery
+                description: "Finaliza e registra a recuperação concluída."
+                with serviceRecoveryId = @variables.service_recovery_id
+                available when @variables.recovery_executed == True
+
+            resolver_caso: @actions.resolve_issue
+                description: "Resolve o caso do hóspede depois que a recuperação está concluída."
+                with caseId = @variables.case_id
+                available when @variables.recovery_executed == True
+
+            ir_escalonamento: @utils.transition to @subagent.escalonamento
+                description: "Encaminha ao gerente de plantão quando há necessidade de aprovação ou quando nada pode ser oferecido."
+                available when @variables.approval_required == True or (@variables.service_recovery_id != "" and @variables.room_change_eligible == False and @variables.compensation_eligible == False)
+
+    actions:
+        get_room_issues:
+            target: "flow://Lumina_Act_GetRoomIssues"
+            description: "Ocorrência aberta de um quarto."
+            inputs:
+                roomId: string
+            outputs:
+                caseId: string
+        evaluate_recovery:
+            target: "flow://Lumina_Act_EvaluateRecovery"
+            description: "Calcula as alternativas de recuperação governadas para um caso."
+            inputs:
+                caseId: string
+                stayId: string
+            outputs:
+                serviceRecoveryId: string
+                outcomeType: string
+                approvalRequired: boolean
+                roomChangeEligible: boolean
+                compensationEligible: boolean
+                offeredRoomId: string
+        execute_room_change:
+            target: "flow://Lumina_Act_ExecuteRoomChange"
+            description: "Troca de quarto transacional e idempotente."
+            require_user_confirmation: True
+            inputs:
+                stayId: string
+                toRoomId: string
+                serviceRecoveryId: string
+            outputs:
+                isSuccess: boolean
+                reasonCode: string
+        register_compensation:
+            target: "flow://Lumina_Act_RegisterCompensation"
+            description: "Persiste um benefício de cortesia permitido."
+            inputs:
+                serviceRecoveryId: string
+                guestId: string
+                caseId: string
+                benefitType: string
+                approvalRequired: boolean
+            outputs:
+                isSuccess: boolean
+        create_maintenance:
+            target: "flow://Lumina_Act_CreateMaintenance"
+            description: "Cria a ordem de manutenção e coloca o quarto em Maintenance."
+            inputs:
+                caseId: string
+                roomId: string
+                priority: string
+            outputs:
+                isSuccess: boolean
+        log_service_recovery:
+            target: "flow://Lumina_Act_LogRecovery"
+            description: "Finaliza idempotentemente uma service recovery."
+            inputs:
+                serviceRecoveryId: string
+            outputs:
+                isSuccess: boolean
+        resolve_issue:
+            target: "flow://Lumina_Act_ResolveIssue"
+            description: "Resolve um caso após a recuperação chegar a um estado terminal."
+            inputs:
+                caseId: string
+            outputs:
+                isSuccess: boolean
+
+subagent escalonamento:
+    label: "Escalonamento"
+    description: "Encaminha o hóspede a um gerente de plantão humano quando a política exige ou quando o hóspede pede."
+
+    reasoning:
+        instructions: ->
+            | Peça desculpas com cordialidade, explique que um gerente de plantão da Lumina vai dar sequência, e use encaminhar. Não prometa resultados nem invente prazos.
+        actions:
+            encaminhar: @utils.escalate
+                description: "Transfere o atendimento para um gerente de plantão humano."
